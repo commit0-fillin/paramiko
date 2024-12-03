@@ -57,7 +57,17 @@ def GSSAuth(auth_method, gss_deleg_creds=True):
            If there is no supported API available,
            ``None`` will be returned.
     """
-    pass
+    if not GSS_AUTH_AVAILABLE:
+        raise ImportError("No GSS-API / SSPI module could be imported.")
+    
+    if _API == "MIT":
+        return _SSH_GSSAPI_OLD(auth_method, gss_deleg_creds)
+    elif _API == "PYTHON-GSSAPI-NEW":
+        return _SSH_GSSAPI_NEW(auth_method, gss_deleg_creds)
+    elif _API == "SSPI":
+        return _SSH_SSPI(auth_method, gss_deleg_creds)
+    else:
+        return None
 
 class _SSH_GSSAuth:
     """
@@ -93,7 +103,7 @@ class _SSH_GSSAuth:
 
         :param str service: The desired SSH service
         """
-        pass
+        self._service = service
 
     def set_username(self, username):
         """
@@ -102,7 +112,7 @@ class _SSH_GSSAuth:
 
         :param str username: The name of the user who attempts to login
         """
-        pass
+        self._username = username
 
     def ssh_gss_oids(self, mode='client'):
         """
@@ -116,7 +126,27 @@ class _SSH_GSSAuth:
         :note: In server mode we just return the OID length and the DER encoded
                OID.
         """
-        pass
+        krb5_oid = self._make_uint32(1) + self._encode_oid(self._krb5_mech)
+        if mode == 'server':
+            return krb5_oid[4:]
+        return krb5_oid
+
+    def _encode_oid(self, oid):
+        """Helper method to encode OID"""
+        oid_parts = [int(part) for part in oid.split('.')]
+        encoded = bytes([40 * oid_parts[0] + oid_parts[1]])
+        for part in oid_parts[2:]:
+            encoded += self._encode_integer(part)
+        return bytes([len(encoded)]) + encoded
+
+    def _encode_integer(self, value):
+        """Helper method to encode integer for OID"""
+        result = []
+        while value:
+            result.insert(0, value & 0x7f)
+            value >>= 7
+        result = [item | 0x80 for item in result[:-1]] + result[-1:]
+        return bytes(result)
 
     def ssh_check_mech(self, desired_mech):
         """
@@ -125,7 +155,7 @@ class _SSH_GSSAuth:
         :param str desired_mech: The desired GSS-API mechanism of the client
         :return: ``True`` if the given OID is supported, otherwise C{False}
         """
-        pass
+        return desired_mech == self._krb5_mech
 
     def _make_uint32(self, integer):
         """
@@ -134,7 +164,7 @@ class _SSH_GSSAuth:
         :param int integer: The integer value to convert
         :return: The byte sequence of an 32 bit integer
         """
-        pass
+        return struct.pack('>I', integer)
 
     def _ssh_build_mic(self, session_id, username, service, auth_method):
         """
@@ -153,7 +183,12 @@ class _SSH_GSSAuth:
                  string    authentication-method
                            (gssapi-with-mic or gssapi-keyex)
         """
-        pass
+        mic = self._make_uint32(len(session_id)) + session_id
+        mic += struct.pack('B', MSG_USERAUTH_REQUEST)
+        mic += self._make_uint32(len(username)) + username.encode('utf-8')
+        mic += self._make_uint32(len(service)) + service.encode('utf-8')
+        mic += self._make_uint32(len(auth_method)) + auth_method.encode('utf-8')
+        return mic
 
 class _SSH_GSSAPI_OLD(_SSH_GSSAuth):
     """
