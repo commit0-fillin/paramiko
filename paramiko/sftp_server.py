@@ -3,6 +3,7 @@ Server-mode SFTP support.
 """
 import os
 import errno
+import errno
 import sys
 from hashlib import md5, sha1
 from paramiko import util
@@ -57,7 +58,14 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
         :param int e: an errno code, as from ``OSError.errno``.
         :return: an `int` SFTP error code like ``SFTP_NO_SUCH_FILE``.
         """
-        pass
+        if e == errno.EACCES:
+            return SFTP_PERMISSION_DENIED
+        elif e == errno.ENOENT:
+            return SFTP_NO_SUCH_FILE
+        elif e == errno.ENOTDIR:
+            return SFTP_NO_SUCH_FILE
+        else:
+            return SFTP_FAILURE
 
     @staticmethod
     def set_file_attr(filename, attr):
@@ -74,9 +82,27 @@ class SFTPServer(BaseSFTP, SubsystemHandler):
             name of the file to alter (should usually be an absolute path).
         :param .SFTPAttributes attr: attributes to change.
         """
-        pass
+        if attr._flags & attr.FLAG_PERMISSIONS:
+            os.chmod(filename, attr.st_mode)
+        if attr._flags & attr.FLAG_UIDGID:
+            os.chown(filename, attr.st_uid, attr.st_gid)
+        if attr._flags & attr.FLAG_AMTIME:
+            os.utime(filename, (attr.st_atime, attr.st_mtime))
 
     def _convert_pflags(self, pflags):
         """convert SFTP-style open() flags to Python's os.open() flags"""
-        pass
+        flags = 0
+        if pflags & SFTP_FLAG_READ:
+            flags |= os.O_RDONLY
+        if pflags & SFTP_FLAG_WRITE:
+            flags |= os.O_WRONLY
+        if pflags & SFTP_FLAG_APPEND:
+            flags |= os.O_APPEND
+        if pflags & SFTP_FLAG_CREATE:
+            flags |= os.O_CREAT
+        if pflags & SFTP_FLAG_TRUNC:
+            flags |= os.O_TRUNC
+        if pflags & SFTP_FLAG_EXCL:
+            flags |= os.O_EXCL
+        return flags
 from paramiko.sftp_handle import SFTPHandle
