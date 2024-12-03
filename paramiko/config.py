@@ -59,7 +59,9 @@ class SSHConfig:
 
         .. versionadded:: 2.7
         """
-        pass
+        config = cls()
+        config.parse(StringIO(text))
+        return config
 
     @classmethod
     def from_path(cls, path):
@@ -68,7 +70,8 @@ class SSHConfig:
 
         .. versionadded:: 2.7
         """
-        pass
+        with open(path, 'r') as f:
+            return cls.from_file(f)
 
     @classmethod
     def from_file(cls, flo):
@@ -77,7 +80,9 @@ class SSHConfig:
 
         .. versionadded:: 2.7
         """
-        pass
+        config = cls()
+        config.parse(flo)
+        return config
 
     def parse(self, file_obj):
         """
@@ -85,7 +90,21 @@ class SSHConfig:
 
         :param file_obj: a file-like object to read the config file from
         """
-        pass
+        host = {"host": ['*'], "config": {}}
+        for line in file_obj:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.lower().startswith('host '):
+                self._config.append(host)
+                host = {"host": self._get_hosts(line.split()[1:]), "config": {}}
+            elif line.lower().startswith('match '):
+                self._config.append(host)
+                host = {"host": ['*'], "config": {}, "match": self._get_matches(line)}
+            else:
+                key, value = self.SETTINGS_REGEX.match(line).groups()
+                host['config'][key.lower()] = value
+        self._config.append(host)
 
     def lookup(self, hostname):
         """
@@ -128,7 +147,16 @@ class SSHConfig:
         .. versionchanged:: 3.3
             Added ``Match final`` support.
         """
-        pass
+        matches = [x for x in self._config if self._host_match(x, hostname)]
+        ret = SSHConfigDict()
+        for m in matches:
+            for k, v in m.get('config', {}).items():
+                if k not in ret:
+                    ret[k] = v
+        ret = self._expand_variables(ret, hostname)
+        if 'hostname' not in ret:
+            ret['hostname'] = hostname
+        return ret
 
     def canonicalize(self, hostname, options, domains):
         """
