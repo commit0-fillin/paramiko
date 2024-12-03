@@ -31,8 +31,13 @@ class RSAKey(PKey):
         if key is not None:
             self.key = key
         else:
-            self._check_type_and_load_cert(msg=msg, key_type=self.name, cert_type='ssh-rsa-cert-v01@openssh.com')
-            self.key = rsa.RSAPublicNumbers(e=msg.get_mpint(), n=msg.get_mpint()).public_key(default_backend())
+            if msg is not None:
+                self._check_type_and_load_cert(msg=msg, key_type=self.name, cert_type='ssh-rsa-cert-v01@openssh.com')
+                e = msg.get_mpint()
+                n = msg.get_mpint()
+                self.key = rsa.RSAPublicNumbers(e=e, n=n).public_key(default_backend())
+            else:
+                raise SSHException("Either msg, data, filename, or key must be provided")
 
     def __str__(self):
         return self.asbytes().decode('utf8', errors='ignore')
@@ -47,4 +52,9 @@ class RSAKey(PKey):
         :param progress_func: Unused
         :return: new `.RSAKey` private key
         """
-        pass
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=bits,
+            backend=default_backend()
+        )
+        return RSAKey(key=private_key)
