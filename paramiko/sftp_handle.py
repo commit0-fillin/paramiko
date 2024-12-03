@@ -43,7 +43,10 @@ class SFTPHandle(ClosingContextManager):
         using the default implementations of `read` and `write`, this
         method's default implementation should be fine also.
         """
-        pass
+        if hasattr(self, 'readfile'):
+            self.readfile.close()
+        if hasattr(self, 'writefile'):
+            self.writefile.close()
 
     def read(self, offset, length):
         """
@@ -63,7 +66,10 @@ class SFTPHandle(ClosingContextManager):
         :param int length: number of bytes to attempt to read.
         :return: the `bytes` read, or an error code `int`.
         """
-        pass
+        if hasattr(self, 'readfile'):
+            self.readfile.seek(offset)
+            return self.readfile.read(length)
+        return SFTP_OP_UNSUPPORTED
 
     def write(self, offset, data):
         """
@@ -83,7 +89,11 @@ class SFTPHandle(ClosingContextManager):
         :param bytes data: data to write into the file.
         :return: an SFTP error code like ``SFTP_OK``.
         """
-        pass
+        if hasattr(self, 'writefile'):
+            self.writefile.seek(offset)
+            self.writefile.write(data)
+            return SFTP_OK
+        return SFTP_OP_UNSUPPORTED
 
     def stat(self):
         """
@@ -96,7 +106,11 @@ class SFTPHandle(ClosingContextManager):
             (like ``SFTP_PERMISSION_DENIED``).
         :rtype: `.SFTPAttributes` or error code
         """
-        pass
+        if hasattr(self, 'readfile'):
+            return SFTPAttributes.from_stat(os.fstat(self.readfile.fileno()))
+        elif hasattr(self, 'writefile'):
+            return SFTPAttributes.from_stat(os.fstat(self.writefile.fileno()))
+        return SFTP_OP_UNSUPPORTED
 
     def chattr(self, attr):
         """
@@ -107,7 +121,19 @@ class SFTPHandle(ClosingContextManager):
         :param .SFTPAttributes attr: the attributes to change on this file.
         :return: an `int` error code like ``SFTP_OK``.
         """
-        pass
+        file_obj = getattr(self, 'readfile', None) or getattr(self, 'writefile', None)
+        if file_obj:
+            try:
+                if attr._flags & attr.FLAG_PERMISSIONS:
+                    os.chmod(file_obj.name, attr.st_mode)
+                if attr._flags & attr.FLAG_UIDGID:
+                    os.chown(file_obj.name, attr.st_uid, attr.st_gid)
+                if attr._flags & attr.FLAG_AMTIME:
+                    os.utime(file_obj.name, (attr.st_atime, attr.st_mtime))
+                return SFTP_OK
+            except OSError:
+                return SFTP_PERMISSION_DENIED
+        return SFTP_OP_UNSUPPORTED
 
     def _set_files(self, files):
         """
@@ -115,12 +141,12 @@ class SFTPHandle(ClosingContextManager):
         the SFTP protocol, listing a directory is a multi-stage process
         requiring a temporary handle.)
         """
-        pass
+        self.__files = files
 
     def _get_next_files(self):
         """
         Used by the SFTP server code to retrieve a cached directory
         listing.
         """
-        pass
+        return self.__files
 from paramiko.sftp_server import SFTPServer
