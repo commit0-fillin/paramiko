@@ -83,7 +83,7 @@ class BufferedFile(ClosingContextManager):
             `True` if the file can be read from. If `False`, `read` will raise
             an exception.
         """
-        pass
+        return (self._flags & self.FLAG_READ) != 0
 
     def writable(self):
         """
@@ -93,7 +93,7 @@ class BufferedFile(ClosingContextManager):
             `True` if the file can be written to. If `False`, `write` will
             raise an exception.
         """
-        pass
+        return (self._flags & self.FLAG_WRITE) != 0
 
     def seekable(self):
         """
@@ -103,7 +103,7 @@ class BufferedFile(ClosingContextManager):
             `True` if the file supports random access. If `False`, `seek` will
             raise an exception.
         """
-        pass
+        return True  # Assuming all BufferedFile instances are seekable
 
     def readinto(self, buff):
         """
