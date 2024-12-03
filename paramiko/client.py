@@ -71,7 +71,18 @@ class SSHClient(ClosingContextManager):
         :raises: ``IOError`` --
             if a filename was provided and the file could not be read
         """
-        pass
+        if filename is None:
+            # Try to get the user's .ssh known_hosts file
+            filename = os.path.expanduser('~/.ssh/known_hosts')
+            if not os.path.exists(filename):
+                return
+        
+        try:
+            self._system_host_keys.load(filename)
+        except IOError:
+            # Only raise IOError if a filename was explicitly provided
+            if filename is not None:
+                raise
 
     def load_host_keys(self, filename):
         """
@@ -89,7 +100,8 @@ class SSHClient(ClosingContextManager):
 
         :raises: ``IOError`` -- if the filename could not be read
         """
-        pass
+        self._host_keys.load(filename)
+        self._host_keys_filename = filename
 
     def save_host_keys(self, filename):
         """
@@ -101,7 +113,10 @@ class SSHClient(ClosingContextManager):
 
         :raises: ``IOError`` -- if the file could not be written
         """
-        pass
+        with open(filename, 'w') as f:
+            for hostname, keys in self._host_keys.items():
+                for keytype, key in keys.items():
+                    f.write(f"{hostname} {keytype} {key.get_base64()}\n")
 
     def get_host_keys(self):
         """
@@ -110,7 +125,7 @@ class SSHClient(ClosingContextManager):
 
         :return: the local host keys as a `.HostKeys` object.
         """
-        pass
+        return self._host_keys
 
     def set_log_channel(self, name):
         """
@@ -119,7 +134,7 @@ class SSHClient(ClosingContextManager):
 
         :param str name: new channel name for logging
         """
-        pass
+        self._log_channel = name
 
     def set_missing_host_key_policy(self, policy):
         """
@@ -139,7 +154,7 @@ class SSHClient(ClosingContextManager):
             the policy to use when receiving a host key from a
             previously-unknown server
         """
-        pass
+        self._policy = policy
 
     def _families_and_addresses(self, hostname, port):
         """
@@ -149,7 +164,17 @@ class SSHClient(ClosingContextManager):
         :param int port: the server port to connect to
         :returns: Yields an iterable of ``(family, address)`` tuples
         """
-        pass
+        guess = False
+        addrinfos = socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for (family, socktype, proto, canonname, sockaddr) in addrinfos:
+            if socktype == socket.SOCK_STREAM:
+                yield family, sockaddr
+                guess = True
+        if not guess:
+            # some OS like AIX don't indicate SOCK_STREAM support, so just
+            # return the first address
+            family, _, _, _, sockaddr = addrinfos[0]
+            yield family, sockaddr
 
     def connect(self, hostname, port=SSH_PORT, username=None, password=None, pkey=None, key_filename=None, timeout=None, allow_agent=True, look_for_keys=True, compress=False, sock=None, gss_auth=False, gss_kex=False, gss_deleg_creds=True, gss_host=None, banner_timeout=None, auth_timeout=None, channel_timeout=None, gss_trust_dns=True, passphrase=None, disabled_algorithms=None, transport_factory=None, auth_strategy=None):
         """
