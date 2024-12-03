@@ -38,7 +38,7 @@ class BadAuthenticationType(AuthenticationException):
         self.allowed_types = types
 
     def __str__(self):
-        return '{}; allowed types: {!r}'.format(self.explanation, self.allowed_types)
+        return '{0}; allowed types: {1!r}'.format(self.explanation, self.allowed_types)
 
 class PartialAuthentication(AuthenticationException):
     """
@@ -51,7 +51,7 @@ class PartialAuthentication(AuthenticationException):
         self.allowed_types = types
 
     def __str__(self):
-        return 'Partial authentication; allowed types: {!r}'.format(self.allowed_types)
+        return 'Partial authentication; allowed types: {0!r}'.format(self.allowed_types)
 
 class UnableToAuthenticate(AuthenticationException):
     pass
@@ -157,7 +157,7 @@ class NoValidConnectionsError(socket.error):
         self.errors = errors
 
     def __reduce__(self):
-        return (self.__class__, (self.errors,))
+        return (NoValidConnectionsError, (self.errors,))
 
 class CouldNotCanonicalize(SSHException):
     """
