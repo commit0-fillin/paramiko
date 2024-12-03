@@ -49,7 +49,27 @@ class SFTPAttributes:
         :param str filename: the filename associated with this file.
         :return: new `.SFTPAttributes` object with the same attribute fields.
         """
-        pass
+        attr = cls()
+        attr.st_size = getattr(obj, 'st_size', None)
+        attr.st_uid = getattr(obj, 'st_uid', None)
+        attr.st_gid = getattr(obj, 'st_gid', None)
+        attr.st_mode = getattr(obj, 'st_mode', None)
+        attr.st_atime = getattr(obj, 'st_atime', None)
+        attr.st_mtime = getattr(obj, 'st_mtime', None)
+        if filename is not None:
+            attr.filename = filename
+        
+        # Set flags based on which attributes are present
+        if attr.st_size is not None:
+            attr._flags |= cls.FLAG_SIZE
+        if attr.st_uid is not None and attr.st_gid is not None:
+            attr._flags |= cls.FLAG_UIDGID
+        if attr.st_mode is not None:
+            attr._flags |= cls.FLAG_PERMISSIONS
+        if attr.st_atime is not None and attr.st_mtime is not None:
+            attr._flags |= cls.FLAG_AMTIME
+        
+        return attr
 
     def __repr__(self):
         return '<SFTPAttributes: {}>'.format(self._debug_str())
