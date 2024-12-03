@@ -84,6 +84,8 @@ class ECDSAKey(PKey):
                 self.verifying_key = key
             except ValueError:
                 raise SSHException('Invalid public key')
+        
+        super(ECDSAKey, self).__init__(msg, data)
 
     def __str__(self):
         return self.asbytes()
@@ -94,7 +96,11 @@ class ECDSAKey(PKey):
         Generate a new private ECDSA key.  This factory function can be used to
         generate a new host key or authentication key.
 
+        :param curve: The curve to use for key generation (default: SECP256R1)
         :param progress_func: Not used for this type of key.
+        :param bits: Not used for ECDSA keys.
         :returns: A new private key (`.ECDSAKey`) object
         """
-        pass
+        private_key = ec.generate_private_key(curve, default_backend())
+        public_key = private_key.public_key()
+        return cls(vals=(private_key, public_key))
