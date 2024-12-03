@@ -58,7 +58,7 @@ class ServerInterface:
         :param int chanid: ID of the channel
         :return: an `int` success or failure code (listed above)
         """
-        pass
+        return OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def get_allowed_auths(self, username):
         """
@@ -75,7 +75,7 @@ class ServerInterface:
         :param str username: the username requesting authentication.
         :return: a comma-separated `str` of authentication types
         """
-        pass
+        return "password"
 
     def check_auth_none(self, username):
         """
@@ -94,7 +94,7 @@ class ServerInterface:
             it succeeds.
         :rtype: int
         """
-        pass
+        return AUTH_FAILED
 
     def check_auth_password(self, username, password):
         """
