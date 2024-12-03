@@ -24,7 +24,12 @@ def open_only(func):
         `.SSHException` -- If the wrapped method is called on an unopened
         `.Channel`.
     """
-    pass
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if not self.active:
+            raise SSHException("Channel is not open")
+        return func(self, *args, **kwargs)
+    return wrapper
 
 class Channel(ClosingContextManager):
     """
@@ -85,7 +90,7 @@ class Channel(ClosingContextManager):
     def __del__(self):
         try:
             self.close()
-        except:
+        except Exception:
             pass
 
     def __repr__(self):
@@ -127,7 +132,19 @@ class Channel(ClosingContextManager):
             `.SSHException` -- if the request was rejected or the channel was
             closed
         """
-        pass
+        m = Message()
+        m.add_byte(cMSG_CHANNEL_REQUEST)
+        m.add_int(self.remote_chanid)
+        m.add_string('pty-req')
+        m.add_boolean(True)
+        m.add_string(term)
+        m.add_int(width)
+        m.add_int(height)
+        m.add_int(width_pixels)
+        m.add_int(height_pixels)
+        m.add_string('')
+        self.transport._send_user_message(m)
+        self._wait_for_event()
 
     @open_only
     def invoke_shell(self):
@@ -147,7 +164,13 @@ class Channel(ClosingContextManager):
             `.SSHException` -- if the request was rejected or the channel was
             closed
         """
-        pass
+        m = Message()
+        m.add_byte(cMSG_CHANNEL_REQUEST)
+        m.add_int(self.remote_chanid)
+        m.add_string('shell')
+        m.add_boolean(True)
+        self.transport._send_user_message(m)
+        self._wait_for_event()
 
     @open_only
     def exec_command(self, command):
