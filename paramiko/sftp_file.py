@@ -42,7 +42,7 @@ class SFTPFile(BufferedFile):
         """
         Close the file.
         """
-        pass
+        self._close()
 
     def _data_in_prefetch_buffers(self, offset):
         """
@@ -51,14 +51,24 @@ class SFTPFile(BufferedFile):
         return None.  this guarantees nothing about the number of bytes
         collected in the prefetch buffer so far.
         """
-        pass
+        with self._prefetch_lock:
+            for file_offset, data in self._prefetch_data.items():
+                if file_offset <= offset < file_offset + len(data):
+                    return file_offset
+        return None
 
     def _read_prefetch(self, size):
         """
         read data out of the prefetch buffer, if possible.  if the data isn't
         in the buffer, return None.  otherwise, behaves like a normal read.
         """
-        pass
+        with self._prefetch_lock:
+            for offset, data in self._prefetch_data.items():
+                if offset <= self._pos < offset + len(data):
+                    chunk = data[self._pos - offset : self._pos - offset + size]
+                    self._pos += len(chunk)
+                    return chunk
+        return None
 
     def settimeout(self, timeout):
         """
@@ -71,7 +81,7 @@ class SFTPFile(BufferedFile):
 
         .. seealso:: `.Channel.settimeout`
         """
-        pass
+        self.sftp.sock.settimeout(timeout)
 
     def gettimeout(self):
         """
@@ -80,7 +90,7 @@ class SFTPFile(BufferedFile):
 
         .. seealso:: `.Channel.gettimeout`
         """
-        pass
+        return self.sftp.sock.gettimeout()
 
     def setblocking(self, blocking):
         """
@@ -92,7 +102,7 @@ class SFTPFile(BufferedFile):
 
         .. seealso:: `.Channel.setblocking`
         """
-        pass
+        self.sftp.sock.setblocking(blocking)
 
     def seekable(self):
         """
@@ -102,7 +112,7 @@ class SFTPFile(BufferedFile):
             `True` if the file supports random access. If `False`,
             :meth:`seek` will raise an exception
         """
-        pass
+        return True
 
     def seek(self, offset, whence=0):
         """
@@ -110,7 +120,18 @@ class SFTPFile(BufferedFile):
 
         See `file.seek` for details.
         """
-        pass
+        self._check_exception()
+        if whence == self.SEEK_SET:
+            new_pos = offset
+        elif whence == self.SEEK_CUR:
+            new_pos = self._pos + offset
+        elif whence == self.SEEK_END:
+            new_pos = self.stat().st_size + offset
+        else:
+            raise ValueError("Invalid whence")
+        if new_pos < 0:
+            raise IOError("Invalid argument")
+        self._pos = new_pos
 
     def stat(self):
         """
@@ -121,7 +142,11 @@ class SFTPFile(BufferedFile):
         :returns:
             an `.SFTPAttributes` object containing attributes about this file.
         """
-        pass
+        self._check_exception()
+        t, msg = self.sftp._request(CMD_FSTAT, self.handle)
+        if t != CMD_ATTRS:
+            raise SFTPError("Expected attributes")
+        return SFTPAttributes._from_msg(msg)
 
     def chmod(self, mode):
         """
@@ -131,7 +156,10 @@ class SFTPFile(BufferedFile):
 
         :param int mode: new permissions
         """
-        pass
+        self._check_exception()
+        attr = SFTPAttributes()
+        attr.st_mode = mode
+        self.sftp._request(CMD_FSETSTAT, self.handle + attr._pack())
 
     def chown(self, uid, gid):
         """
@@ -143,7 +171,11 @@ class SFTPFile(BufferedFile):
         :param int uid: new owner's uid
         :param int gid: new group id
         """
-        pass
+        self._check_exception()
+        attr = SFTPAttributes()
+        attr.st_uid = uid
+        attr.st_gid = gid
+        self.sftp._request(CMD_FSETSTAT, self.handle + attr._pack())
 
     def utime(self, times):
         """
@@ -158,7 +190,13 @@ class SFTPFile(BufferedFile):
             ``None`` or a tuple of (access time, modified time) in standard
             internet epoch time (seconds since 01 January 1970 GMT)
         """
-        pass
+        self._check_exception()
+        if times is None:
+            times = (time.time(), time.time())
+        attr = SFTPAttributes()
+        attr.st_atime = int(times[0])
+        attr.st_mtime = int(times[1])
+        self.sftp._request(CMD_FSETSTAT, self.handle + attr._pack())
 
     def truncate(self, size):
         """
@@ -168,7 +206,10 @@ class SFTPFile(BufferedFile):
 
         :param size: the new size of the file
         """
-        pass
+        self._check_exception()
+        attr = SFTPAttributes()
+        attr.st_size = size
+        self.sftp._request(CMD_FSETSTAT, self.handle + attr._pack())
 
     def check(self, hash_algorithm, offset=0, length=0, block_size=0):
         """
@@ -216,7 +257,16 @@ class SFTPFile(BufferedFile):
 
         .. versionadded:: 1.4
         """
-        pass
+        self._check_exception()
+        t, msg = self.sftp._request(CMD_EXTENDED, 'check-file',
+                                    self.handle,
+                                    hash_algorithm,
+                                    long(offset),
+                                    long(length),
+                                    block_size)
+        if t != CMD_EXTENDED_REPLY:
+            raise SFTPError('Expected extended reply')
+        return msg.get_string()
 
     def set_pipelined(self, pipelined=True):
         """
@@ -236,7 +286,7 @@ class SFTPFile(BufferedFile):
 
         .. versionadded:: 1.5
         """
-        pass
+        self.pipelined = pipelined
 
     def prefetch(self, file_size=None, max_concurrent_requests=None):
         """
@@ -271,7 +321,32 @@ class SFTPFile(BufferedFile):
         .. versionchanged:: 3.3
             Added ``max_concurrent_requests``.
         """
-        pass
+        if file_size is None:
+            file_size = self.stat().st_size
+        self._prefetching = True
+        self._prefetch_done = False
+        self._prefetch_data = {}
+        self._prefetch_extents = {}
+
+        def prefetch_thread():
+            self._prefetch_thread_id = threading.get_ident()
+            offset = self._pos
+            while offset < file_size:
+                if not self._prefetching:
+                    break
+                size = min(self.MAX_REQUEST_SIZE, file_size - offset)
+                data = self.read(size, offset)
+                if not data:
+                    break
+                with self._prefetch_lock:
+                    self._prefetch_data[offset] = data
+                    self._prefetch_extents[offset] = len(data)
+                offset += len(data)
+            self._prefetch_done = True
+
+        max_concurrent_requests = max_concurrent_requests or 10
+        prefetch_thread = threading.Thread(target=prefetch_thread)
+        prefetch_thread.start()
 
     def readv(self, chunks, max_concurrent_prefetch_requests=None):
         """
@@ -293,8 +368,19 @@ class SFTPFile(BufferedFile):
         .. versionchanged:: 3.3
             Added ``max_concurrent_prefetch_requests``.
         """
-        pass
+        self._check_exception()
+        max_concurrent_requests = max_concurrent_prefetch_requests or 10
+        blocks = []
+        for offset, length in chunks:
+            data = self._read_prefetch(length)
+            if data is None:
+                data = self.read(length, offset)
+            blocks.append(data)
+        return blocks
 
     def _check_exception(self):
         """if there's a saved exception, raise & clear it"""
-        pass
+        if self._saved_exception is not None:
+            exc = self._saved_exception
+            self._saved_exception = None
+            raise exc
