@@ -73,21 +73,32 @@ class Packetizer:
         """
         Set the Python log object to use for logging.
         """
-        pass
+        self.__logger = log
 
     def set_outbound_cipher(self, block_engine, block_size, mac_engine, mac_size, mac_key, sdctr=False, etm=False):
         """
         Switch outbound data cipher.
         :param etm: Set encrypt-then-mac from OpenSSH
         """
-        pass
+        self.__block_engine_out = block_engine
+        self.__block_size_out = block_size
+        self.__mac_engine_out = mac_engine
+        self.__mac_size_out = mac_size
+        self.__mac_key_out = mac_key
+        self.__sdctr_out = sdctr
+        self.__etm_out = etm
 
     def set_inbound_cipher(self, block_engine, block_size, mac_engine, mac_size, mac_key, etm=False):
         """
         Switch inbound data cipher.
         :param etm: Set encrypt-then-mac from OpenSSH
         """
-        pass
+        self.__block_engine_in = block_engine
+        self.__block_size_in = block_size
+        self.__mac_engine_in = mac_engine
+        self.__mac_size_in = mac_size
+        self.__mac_key_in = mac_key
+        self.__etm_in = etm
 
     def need_rekey(self):
         """
@@ -95,7 +106,11 @@ class Packetizer:
         will be triggered during a packet read or write, so it should be
         checked after every read or write, or at least after every few.
         """
-        pass
+        return (
+            self.__need_rekey or
+            (self.__sent_bytes >= self.REKEY_BYTES) or
+            (self.__sent_packets >= self.REKEY_PACKETS)
+        )
 
     def set_keepalive(self, interval, callback):
         """
@@ -103,7 +118,9 @@ class Packetizer:
         no data read from or written to the socket, the callback will be
         executed and the timer will be reset.
         """
-        pass
+        self.__keepalive_interval = interval
+        self.__keepalive_callback = callback
+        self.__keepalive_last = time.time()
 
     def start_handshake(self, timeout):
         """
@@ -113,7 +130,9 @@ class Packetizer:
 
         :param float timeout: amount of seconds to wait before timing out
         """
-        pass
+        self.__handshake_complete = False
+        self.__timer = threading.Timer(timeout, self.__handshake_timed_out)
+        self.__timer.start()
 
     def handshake_timed_out(self):
         """
@@ -125,13 +144,15 @@ class Packetizer:
 
         :return: handshake time out status, as a `bool`
         """
-        pass
+        return self.__timer_expired and not self.__handshake_complete
 
     def complete_handshake(self):
         """
         Tells `Packetizer` that the handshake has completed.
         """
-        pass
+        self.__handshake_complete = True
+        if self.__timer:
+            self.__timer.cancel()
 
     def read_all(self, n, check_rekey=False):
         """
@@ -144,20 +165,42 @@ class Packetizer:
             ``EOFError`` -- if the socket was closed before all the bytes could
             be read
         """
-        pass
+        out = bytes()
+        while len(out) < n:
+            buf = self.__socket.recv(n - len(out))
+            if len(buf) == 0:
+                raise EOFError()
+            out += buf
+        if check_rekey and self.need_rekey():
+            raise NeedRekeyException()
+        return out
 
     def readline(self, timeout):
         """
         Read a line from the socket.  We assume no data is pending after the
         line, so it's okay to attempt large reads.
         """
-        pass
+        buf = bytes()
+        start = time.time()
+        while True:
+            buf += self.__socket.recv(1)
+            if buf.endswith(b'\n'):
+                break
+            if timeout is not None and time.time() - start > timeout:
+                raise socket.timeout()
+        return buf
 
     def send_message(self, data):
         """
         Write a block of data using the current cipher, as an SSH block.
         """
-        pass
+        payload = self.__block_engine_out.encrypt(data)
+        mac = self.__mac_engine_out.digest(self.__mac_key_out, self.__sequence_number_out, payload)
+        packet = struct.pack('>I', len(payload)) + payload + mac
+        self.__sequence_number_out = (self.__sequence_number_out + 1) & 0xffffffff
+        self.__socket.sendall(packet)
+        self.__sent_bytes += len(packet)
+        self.__sent_packets += 1
 
     def read_message(self):
         """
@@ -167,4 +210,24 @@ class Packetizer:
         :raises: `.SSHException` -- if the packet is mangled
         :raises: `.NeedRekeyException` -- if the transport should rekey
         """
-        pass
+        header = self.read_all(self.__block_size_in, check_rekey=True)
+        packet_size = struct.unpack('>I', header[:4])[0]
+        leftover = header[4:]
+        if (packet_size - len(leftover)) % self.__block_size_in != 0:
+            raise SSHException('Invalid packet blocking')
+        buf = self.read_all(packet_size + self.__mac_size_in - len(leftover))
+        packet = leftover + buf[:-self.__mac_size_in]
+        mac = buf[-self.__mac_size_in:]
+        if self.__mac_size_in > 0:
+            mac_payload = struct.pack('>I', self.__sequence_number_in) + packet
+            my_mac = self.__mac_engine_in.digest(self.__mac_key_in, mac_payload)
+            if my_mac != mac:
+                raise SSHException('Mismatched MAC')
+        padding = byte_ord(packet[0])
+        payload = packet[1:packet_size - padding]
+        self.__sequence_number_in = (self.__sequence_number_in + 1) & 0xffffffff
+        self.__received_bytes += packet_size + self.__mac_size_in + 4
+        self.__received_packets += 1
+        if self.need_rekey():
+            raise NeedRekeyException()
+        return payload
