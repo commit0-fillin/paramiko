@@ -20,15 +20,16 @@ class AuthSource:
 
     def __init__(self, username):
         self.username = username
+        self.log = get_logger(__name__)
 
     def __repr__(self):
-        return self._repr()
+        return f"{self.__class__.__name__}(username={self.username!r})"
 
     def authenticate(self, transport):
         """
         Perform authentication.
         """
-        pass
+        raise NotImplementedError("Subclasses must implement this method")
 
 class NoneAuth(AuthSource):
     """
@@ -189,7 +190,7 @@ class AuthStrategy:
         Subclasses _of_ subclasses may find themselves wanting to do things
         like filtering or discarding around a call to `super`.
         """
-        pass
+        raise NotImplementedError("Subclasses must implement this method")
 
     def authenticate(self, transport):
         """
@@ -198,4 +199,15 @@ class AuthStrategy:
         You *normally* won't need to override this, but it's an option for
         advanced users.
         """
-        pass
+        result = AuthResult(self)
+        for source in self.get_sources():
+            try:
+                auth_result = source.authenticate(transport)
+                result.append(SourceResult(source, auth_result))
+                if not auth_result:  # Empty list means success
+                    return result
+            except AuthenticationException as e:
+                result.append(SourceResult(source, e))
+                self.log.warning(f"Authentication failed for {source}: {str(e)}")
+        
+        raise AuthFailure(result)
