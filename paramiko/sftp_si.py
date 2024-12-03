@@ -3,7 +3,12 @@ An interface to override for SFTP server support.
 """
 import os
 import sys
-from paramiko.sftp import SFTP_OP_UNSUPPORTED
+from paramiko.sftp import (
+    SFTP_OK, SFTP_EOF, SFTP_NO_SUCH_FILE, SFTP_PERMISSION_DENIED, SFTP_FAILURE,
+    SFTP_BAD_MESSAGE, SFTP_NO_CONNECTION, SFTP_CONNECTION_LOST, SFTP_OP_UNSUPPORTED
+)
+from paramiko.sftp_attr import SFTPAttributes
+from paramiko.sftp_handle import SFTPHandle
 
 class SFTPServerInterface:
     """
@@ -36,7 +41,7 @@ class SFTPServerInterface:
         overridden to perform any necessary setup before handling callbacks
         from SFTP operations.
         """
-        pass
+        self.logger.info("SFTP session started")
 
     def session_ended(self):
         """
@@ -45,7 +50,7 @@ class SFTPServerInterface:
         necessary cleanup before this `.SFTPServerInterface` object is
         destroyed.
         """
-        pass
+        self.logger.info("SFTP session ended")
 
     def open(self, path, flags, attr):
         """
@@ -85,7 +90,26 @@ class SFTPServerInterface:
             requested attributes of the file if it is newly created.
         :return: a new `.SFTPHandle` or error code.
         """
-        pass
+        try:
+            binary_flag = 'b'
+            mode = 'r'  # Default to read mode
+            if flags & os.O_WRONLY:
+                mode = 'w'
+            elif flags & os.O_RDWR:
+                mode = 'r+'
+            if flags & os.O_APPEND:
+                mode = 'a' if 'w' not in mode else mode.replace('w', 'a')
+            if flags & os.O_CREAT:
+                mode += '+'
+            
+            mode += binary_flag
+            
+            f = open(path, mode)
+            return SFTPHandle(f)
+        except IOError as e:
+            return SFTP_PERMISSION_DENIED
+        except Exception as e:
+            return SFTP_FAILURE
 
     def list_folder(self, path):
         """
@@ -117,7 +141,23 @@ class SFTPServerInterface:
             direct translation from the SFTP server path to your local
             filesystem.
         """
-        pass
+        try:
+            normalized_path = os.path.normpath(os.path.join('/', path))
+            if not os.path.isdir(normalized_path):
+                return SFTP_NO_SUCH_FILE
+            
+            file_list = []
+            for filename in os.listdir(normalized_path):
+                filepath = os.path.join(normalized_path, filename)
+                attr = SFTPAttributes.from_stat(os.stat(filepath))
+                attr.filename = filename
+                file_list.append(attr)
+            
+            return file_list
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
 
     def stat(self, path):
         """
@@ -133,7 +173,15 @@ class SFTPServerInterface:
             an `.SFTPAttributes` object for the given file, or an SFTP error
             code (like ``SFTP_PERMISSION_DENIED``).
         """
-        pass
+        try:
+            normalized_path = os.path.normpath(os.path.join('/', path))
+            return SFTPAttributes.from_stat(os.stat(normalized_path))
+        except FileNotFoundError:
+            return SFTP_NO_SUCH_FILE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
 
     def lstat(self, path):
         """
@@ -151,7 +199,15 @@ class SFTPServerInterface:
             an `.SFTPAttributes` object for the given file, or an SFTP error
             code (like ``SFTP_PERMISSION_DENIED``).
         """
-        pass
+        try:
+            normalized_path = os.path.normpath(os.path.join('/', path))
+            return SFTPAttributes.from_stat(os.lstat(normalized_path))
+        except FileNotFoundError:
+            return SFTP_NO_SUCH_FILE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
 
     def remove(self, path):
         """
@@ -161,7 +217,18 @@ class SFTPServerInterface:
             the requested path (relative or absolute) of the file to delete.
         :return: an SFTP error code `int` like ``SFTP_OK``.
         """
-        pass
+        try:
+            normalized_path = os.path.normpath(os.path.join('/', path))
+            os.remove(normalized_path)
+            return SFTP_OK
+        except FileNotFoundError:
+            return SFTP_NO_SUCH_FILE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except IsADirectoryError:
+            return SFTP_FAILURE
+        except Exception:
+            return SFTP_FAILURE
 
     def rename(self, oldpath, newpath):
         """
@@ -185,7 +252,21 @@ class SFTPServerInterface:
         :param str newpath: the requested new path of the file.
         :return: an SFTP error code `int` like ``SFTP_OK``.
         """
-        pass
+        try:
+            normalized_oldpath = os.path.normpath(os.path.join('/', oldpath))
+            normalized_newpath = os.path.normpath(os.path.join('/', newpath))
+            
+            if os.path.exists(normalized_newpath):
+                return SFTP_FAILURE
+            
+            os.rename(normalized_oldpath, normalized_newpath)
+            return SFTP_OK
+        except FileNotFoundError:
+            return SFTP_NO_SUCH_FILE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
 
     def posix_rename(self, oldpath, newpath):
         """
@@ -199,7 +280,18 @@ class SFTPServerInterface:
 
         :versionadded: 2.2
         """
-        pass
+        try:
+            normalized_oldpath = os.path.normpath(os.path.join('/', oldpath))
+            normalized_newpath = os.path.normpath(os.path.join('/', newpath))
+            
+            os.replace(normalized_oldpath, normalized_newpath)
+            return SFTP_OK
+        except FileNotFoundError:
+            return SFTP_NO_SUCH_FILE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
 
     def mkdir(self, path, attr):
         """
@@ -216,7 +308,20 @@ class SFTPServerInterface:
         :param .SFTPAttributes attr: requested attributes of the new folder.
         :return: an SFTP error code `int` like ``SFTP_OK``.
         """
-        pass
+        try:
+            normalized_path = os.path.normpath(os.path.join('/', path))
+            os.mkdir(normalized_path)
+            
+            if hasattr(attr, 'st_mode'):
+                os.chmod(normalized_path, attr.st_mode)
+            
+            return SFTP_OK
+        except FileExistsError:
+            return SFTP_FAILURE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
 
     def rmdir(self, path):
         """
@@ -228,7 +333,18 @@ class SFTPServerInterface:
             requested path (relative or absolute) of the folder to remove.
         :return: an SFTP error code `int` like ``SFTP_OK``.
         """
-        pass
+        try:
+            normalized_path = os.path.normpath(os.path.join('/', path))
+            os.rmdir(normalized_path)
+            return SFTP_OK
+        except FileNotFoundError:
+            return SFTP_NO_SUCH_FILE
+        except OSError:  # Directory not empty
+            return SFTP_FAILURE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
 
     def chattr(self, path, attr):
         """
@@ -243,7 +359,25 @@ class SFTPServerInterface:
             object)
         :return: an error code `int` like ``SFTP_OK``.
         """
-        pass
+        try:
+            normalized_path = os.path.normpath(os.path.join('/', path))
+            
+            if hasattr(attr, 'st_mode'):
+                os.chmod(normalized_path, attr.st_mode)
+            
+            if hasattr(attr, 'st_uid') and hasattr(attr, 'st_gid'):
+                os.chown(normalized_path, attr.st_uid, attr.st_gid)
+            
+            if hasattr(attr, 'st_atime') and hasattr(attr, 'st_mtime'):
+                os.utime(normalized_path, (attr.st_atime, attr.st_mtime))
+            
+            return SFTP_OK
+        except FileNotFoundError:
+            return SFTP_NO_SUCH_FILE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
 
     def canonicalize(self, path):
         """
@@ -259,7 +393,7 @@ class SFTPServerInterface:
 
         The default implementation returns ``os.path.normpath('/' + path)``.
         """
-        pass
+        return os.path.normpath('/' + path)
 
     def readlink(self, path):
         """
@@ -272,7 +406,18 @@ class SFTPServerInterface:
             the target `str` path of the symbolic link, or an error code like
             ``SFTP_NO_SUCH_FILE``.
         """
-        pass
+        try:
+            normalized_path = os.path.normpath(os.path.join('/', path))
+            target = os.readlink(normalized_path)
+            return target
+        except FileNotFoundError:
+            return SFTP_NO_SUCH_FILE
+        except OSError:  # Not a symbolic link
+            return SFTP_FAILURE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
 
     def symlink(self, target_path, path):
         """
@@ -286,4 +431,14 @@ class SFTPServerInterface:
             path (relative or absolute) of the symbolic link to create.
         :return: an error code `int` like ``SFTP_OK``.
         """
-        pass
+        try:
+            normalized_target_path = os.path.normpath(os.path.join('/', target_path))
+            normalized_path = os.path.normpath(os.path.join('/', path))
+            os.symlink(normalized_target_path, normalized_path)
+            return SFTP_OK
+        except FileExistsError:
+            return SFTP_FAILURE
+        except PermissionError:
+            return SFTP_PERMISSION_DENIED
+        except Exception:
+            return SFTP_FAILURE
