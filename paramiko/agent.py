@@ -45,7 +45,7 @@ class AgentSSH:
             a tuple of `.AgentKey` objects representing keys available on the
             SSH agent
         """
-        pass
+        return self._keys
 
 class AgentProxyThread(threading.Thread):
     """
@@ -72,7 +72,18 @@ class AgentLocalProxy(AgentProxyThread):
 
         May block!
         """
-        pass
+        import tempfile
+        import socket
+        import os
+
+        temp_dir = tempfile.mkdtemp(prefix='ssh-')
+        socket_path = os.path.join(temp_dir, 'agent.{}'.format(os.getpid()))
+        
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(socket_path)
+        sock.listen(1)
+
+        return sock, socket_path
 
 class AgentRemoteProxy(AgentProxyThread):
     """
@@ -89,7 +100,21 @@ def get_agent_connection():
 
     .. versionadded:: 2.10
     """
-    pass
+    import os
+    import socket
+
+    # Try to connect to the SSH agent
+    agent_sock = os.environ.get('SSH_AUTH_SOCK')
+    if agent_sock:
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(agent_sock)
+            return sock
+        except socket.error:
+            return None
+
+    # If no SSH agent is available, return None
+    return None
 
 class AgentClientProxy:
     """
@@ -117,14 +142,20 @@ class AgentClientProxy:
         """
         Method automatically called by ``AgentProxyThread.run``.
         """
-        pass
+        if self._conn is None:
+            self._conn = get_agent_connection()
+        return self._conn is not None
 
     def close(self):
         """
         Close the current connection and terminate the agent
         Should be called manually
         """
-        pass
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+        if self.thread:
+            self.thread.join()
 
 class AgentServerProxy(AgentSSH):
     """
@@ -161,7 +192,21 @@ class AgentServerProxy(AgentSSH):
         Terminate the agent, clean the files, close connections
         Should be called manually
         """
-        pass
+        if self.thread:
+            self.thread.exit = True
+            self.thread.join()
+
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+        import os
+        import shutil
+
+        if os.path.exists(self._file):
+            os.remove(self._file)
+        if os.path.exists(self._dir):
+            shutil.rmtree(self._dir)
 
     def get_env(self):
         """
@@ -170,7 +215,7 @@ class AgentServerProxy(AgentSSH):
         :return:
             a dict containing the ``SSH_AUTH_SOCK`` environment variables
         """
-        pass
+        return {'SSH_AUTH_SOCK': self._file}
 
 class AgentRequestHandler:
     """
