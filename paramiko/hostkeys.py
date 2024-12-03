@@ -7,7 +7,7 @@ from hashlib import sha1
 from hmac import HMAC
 from paramiko.pkey import PKey, UnknownKeyType
 from paramiko.util import get_logger, constant_time_bytes_eq, b, u
-from paramiko.ssh_exception import SSHException
+from paramiko.ssh_exception import SSHException, InvalidHostKey
 
 class HostKeys(MutableMapping):
     """
@@ -41,7 +41,11 @@ class HostKeys(MutableMapping):
         :param str keytype: key type (``"ssh-rsa"`` or ``"ssh-dss"``)
         :param .PKey key: the key to add
         """
-        pass
+        for entry in self._entries:
+            if entry.hostnames == [hostname] and entry.key.get_name() == keytype:
+                entry.key = key
+                return
+        self._entries.append(HostKeyEntry([hostname], key))
 
     def load(self, filename):
         """
@@ -58,7 +62,18 @@ class HostKeys(MutableMapping):
 
         :raises: ``IOError`` -- if there was an error reading the file
         """
-        pass
+        with open(filename, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                try:
+                    entry = HostKeyEntry.from_line(line)
+                    if entry.key:
+                        for hostname in entry.hostnames:
+                            self.add(hostname, entry.key.get_name(), entry.key)
+                except (ValueError, IndexError, InvalidHostKey):
+                    continue
 
     def save(self, filename):
         """
@@ -73,7 +88,10 @@ class HostKeys(MutableMapping):
 
         .. versionadded:: 1.6.1
         """
-        pass
+        with open(filename, 'w') as f:
+            for entry in self._entries:
+                for hostname in entry.hostnames:
+                    f.write(f"{hostname} {entry.key.get_name()} {entry.key.get_base64()}\n")
 
     def lookup(self, hostname):
         """
@@ -85,7 +103,11 @@ class HostKeys(MutableMapping):
         :return: dict of `str` -> `.PKey` keys associated with this host
             (or ``None``)
         """
-        pass
+        keys = {}
+        for entry in self._entries:
+            if self._hostname_matches(hostname, entry):
+                keys[entry.key.get_name()] = entry.key
+        return keys if keys else None
 
     def _hostname_matches(self, hostname, entry):
         """
@@ -93,7 +115,21 @@ class HostKeys(MutableMapping):
 
         :returns bool:
         """
-        pass
+        for host in entry.hostnames:
+            if host.startswith('|1|'):
+                # This is a hashed hostname
+                if self._compare_hash(hostname, host):
+                    return True
+            elif host == hostname:
+                return True
+        return False
+
+    def _compare_hash(self, hostname, hashed_hostname):
+        salt, hash_value = hashed_hostname[3:].split('|')
+        salt = decodebytes(salt.encode('ascii'))
+        hash_value = decodebytes(hash_value.encode('ascii'))
+        hmac_obj = HMAC(salt, hostname.encode('utf-8'), sha1)
+        return hmac_obj.digest() == hash_value
 
     def check(self, hostname, key):
         """
@@ -105,13 +141,17 @@ class HostKeys(MutableMapping):
         :return:
             ``True`` if the key is associated with the hostname; else ``False``
         """
-        pass
+        for entry in self._entries:
+            if self._hostname_matches(hostname, entry):
+                if entry.key == key:
+                    return True
+        return False
 
     def clear(self):
         """
         Remove all host keys from the dictionary.
         """
-        pass
+        self._entries = []
 
     def __iter__(self):
         for k in self.keys():
@@ -160,7 +200,21 @@ class HostKeys(MutableMapping):
             (must be 20 bytes long)
         :return: the hashed hostname as a `str`
         """
-        pass
+        if salt is None:
+            salt = os.urandom(20)
+        else:
+            if not isinstance(salt, bytes):
+                salt = salt.encode('ascii')
+            if len(salt) != 20:
+                raise ValueError("Salt must be 20 bytes long")
+
+        hmac_obj = HMAC(salt, hostname.encode('utf-8'), sha1)
+        hostname_hash = hmac_obj.digest()
+
+        return '|1|{}|{}'.format(
+            encodebytes(salt).decode('ascii').strip(),
+            encodebytes(hostname_hash).decode('ascii').strip()
+        )
 
 class InvalidHostKey(Exception):
 
@@ -193,7 +247,25 @@ class HostKeyEntry:
 
         :param str line: a line from an OpenSSH known_hosts file
         """
-        pass
+        fields = line.split()
+        if len(fields) < 3:
+            raise InvalidHostKey("Not enough fields: {}".format(line))
+
+        hostnames = fields[0].split(',')
+        keytype = fields[1]
+        key = b(' '.join(fields[2:]))
+
+        try:
+            key = decodebytes(key.encode('ascii'))
+        except:
+            raise InvalidHostKey("Invalid key: {}".format(line))
+
+        try:
+            pkey = PKey.from_type_string(keytype, key)
+        except UnknownKeyType:
+            raise InvalidHostKey("Unknown key type: {}".format(keytype))
+
+        return cls(hostnames, pkey)
 
     def to_line(self):
         """
@@ -201,7 +273,13 @@ class HostKeyEntry:
         the object is not in a valid state.  A trailing newline is
         included.
         """
-        pass
+        if self.valid:
+            return '{} {} {}\n'.format(
+                ','.join(self.hostnames),
+                self.key.get_name(),
+                self.key.get_base64()
+            )
+        return None
 
     def __repr__(self):
         return '<HostKeyEntry {!r}: {!r}>'.format(self.hostnames, self.key)
