@@ -21,7 +21,13 @@ def _to_unicode(s):
     protocol).  if neither works, just return a byte string because the server
     probably doesn't know the filename's encoding.
     """
-    pass
+    try:
+        return s.decode('ascii')
+    except UnicodeDecodeError:
+        try:
+            return s.decode('utf-8')
+        except UnicodeDecodeError:
+            return s
 b_slash = b'/'
 
 class SFTPClient(BaseSFTP, ClosingContextManager):
@@ -88,7 +94,11 @@ class SFTPClient(BaseSFTP, ClosingContextManager):
         .. versionchanged:: 1.15
             Added the ``window_size`` and ``max_packet_size`` arguments.
         """
-        pass
+        chan = t.open_session(window_size=window_size, max_packet_size=max_packet_size)
+        if chan is None:
+            return None
+        chan.invoke_subsystem('sftp')
+        return cls(chan)
 
     def close(self):
         """
@@ -96,7 +106,8 @@ class SFTPClient(BaseSFTP, ClosingContextManager):
 
         .. versionadded:: 1.4
         """
-        pass
+        self.sock.close()
+        self.sock = None
 
     def get_channel(self):
         """
@@ -105,7 +116,7 @@ class SFTPClient(BaseSFTP, ClosingContextManager):
 
         .. versionadded:: 1.7.1
         """
-        pass
+        return self.sock
 
     def listdir(self, path='.'):
         """
@@ -119,7 +130,7 @@ class SFTPClient(BaseSFTP, ClosingContextManager):
 
         :param str path: path to list (defaults to ``'.'``)
         """
-        pass
+        return [f.filename for f in self.listdir_attr(path)]
 
     def listdir_attr(self, path='.'):
         """
@@ -138,7 +149,30 @@ class SFTPClient(BaseSFTP, ClosingContextManager):
 
         .. versionadded:: 1.2
         """
-        pass
+        path = self._adjust_cwd(path)
+        t, msg = self._request(CMD_OPENDIR, path)
+        if t != CMD_HANDLE:
+            raise SFTPError('Expected handle')
+        handle = msg.get_binary()
+        filelist = []
+        while True:
+            try:
+                t, msg = self._request(CMD_READDIR, handle)
+                if t != CMD_NAME:
+                    raise SFTPError('Expected name response')
+                count = msg.get_int()
+                for i in range(count):
+                    filename = msg.get_text()
+                    longname = msg.get_text()
+                    attr = SFTPAttributes._from_msg(msg)
+                    if (filename != '.') and (filename != '..'):
+                        attr.filename = filename
+                        attr.longname = longname
+                        filelist.append(attr)
+            except EOFError:
+                break
+        self._request(CMD_CLOSE, handle)
+        return filelist
 
     def listdir_iter(self, path='.', read_aheads=50):
         """
@@ -154,7 +188,36 @@ class SFTPClient(BaseSFTP, ClosingContextManager):
 
         .. versionadded:: 1.15
         """
-        pass
+        path = self._adjust_cwd(path)
+        t, msg = self._request(CMD_OPENDIR, path)
+        if t != CMD_HANDLE:
+            raise SFTPError('Expected handle')
+        handle = msg.get_binary()
+        
+        read_ahead_count = 0
+        while True:
+            try:
+                if read_ahead_count == 0:
+                    t, msg = self._request(CMD_READDIR, handle)
+                    if t != CMD_NAME:
+                        raise SFTPError('Expected name response')
+                    read_ahead_count = read_aheads
+                
+                count = msg.get_int()
+                for i in range(count):
+                    filename = msg.get_text()
+                    longname = msg.get_text()
+                    attr = SFTPAttributes._from_msg(msg)
+                    if (filename != '.') and (filename != '..'):
+                        attr.filename = filename
+                        attr.longname = longname
+                        yield attr
+                
+                read_ahead_count -= 1
+            except EOFError:
+                break
+        
+        self._request(CMD_CLOSE, handle)
 
     def open(self, filename, mode='r', bufsize=-1):
         """
