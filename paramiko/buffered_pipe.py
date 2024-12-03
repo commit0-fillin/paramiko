@@ -36,7 +36,11 @@ class BufferedPipe:
 
         :param threading.Event event: the event to set/clear
         """
-        pass
+        self._event = event
+        if len(self._buffer) > 0 or self._closed:
+            self._event.set()
+        else:
+            self._event.clear()
 
     def feed(self, data):
         """
@@ -45,7 +49,11 @@ class BufferedPipe:
 
         :param data: the data to add, as a ``str`` or ``bytes``
         """
-        pass
+        with self._lock:
+            self._buffer.extend(data)
+            self._cv.notify()
+        if self._event is not None:
+            self._event.set()
 
     def read_ready(self):
         """
@@ -57,7 +65,8 @@ class BufferedPipe:
             ``True`` if a `read` call would immediately return at least one
             byte; ``False`` otherwise.
         """
-        pass
+        with self._lock:
+            return len(self._buffer) > 0 or self._closed
 
     def read(self, nbytes, timeout=None):
         """
@@ -80,7 +89,29 @@ class BufferedPipe:
             `.PipeTimeout` -- if a timeout was specified and no data was ready
             before that timeout
         """
-        pass
+        with self._lock:
+            if len(self._buffer) == 0 and not self._closed:
+                if timeout is None:
+                    self._cv.wait()
+                else:
+                    if not self._cv.wait(timeout):
+                        raise PipeTimeout()
+
+            if len(self._buffer) == 0 and self._closed:
+                return b''
+
+            if len(self._buffer) <= nbytes:
+                result = self._buffer
+                self._buffer = array.array('B')
+            else:
+                result = self._buffer[:nbytes]
+                del self._buffer[:nbytes]
+
+            if self._event is not None:
+                if len(self._buffer) == 0 and not self._closed:
+                    self._event.clear()
+
+        return result.tobytes()
 
     def empty(self):
         """
@@ -90,14 +121,23 @@ class BufferedPipe:
             any data that was in the buffer prior to clearing it out, as a
             `str`
         """
-        pass
+        with self._lock:
+            result = self._buffer.tobytes()
+            self._buffer = array.array('B')
+            if self._event is not None:
+                self._event.clear()
+        return result
 
     def close(self):
         """
         Close this pipe object.  Future calls to `read` after the buffer
         has been emptied will return immediately with an empty string.
         """
-        pass
+        with self._lock:
+            self._closed = True
+            self._cv.notify()
+        if self._event is not None:
+            self._event.set()
 
     def __len__(self):
         """
