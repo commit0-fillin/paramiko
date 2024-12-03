@@ -38,6 +38,8 @@ class DSSKey(PKey):
         if vals is not None:
             self.p, self.q, self.g, self.y = vals
         else:
+            if msg is None:
+                raise SSHException("Key object may not be empty")
             self._check_type_and_load_cert(msg=msg, key_type=self.name, cert_type=f'{self.name}-cert-v01@openssh.com')
             self.p = msg.get_mpint()
             self.q = msg.get_mpint()
@@ -58,4 +60,19 @@ class DSSKey(PKey):
         :param progress_func: Unused
         :return: new `.DSSKey` private key
         """
-        pass
+        from cryptography.hazmat.primitives.asymmetric import dsa
+        from cryptography.hazmat.backends import default_backend
+
+        private_key = dsa.generate_private_key(
+            key_size=bits,
+            backend=default_backend()
+        )
+        numbers = private_key.private_numbers()
+        public_numbers = numbers.public_numbers
+
+        key = DSSKey(vals=(public_numbers.parameter_numbers.p,
+                           public_numbers.parameter_numbers.q,
+                           public_numbers.parameter_numbers.g,
+                           public_numbers.y))
+        key.x = numbers.x
+        return key
