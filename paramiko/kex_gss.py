@@ -48,7 +48,13 @@ class KexGSSGroup1:
         """
         Start the GSS-API / SSPI Authenticated Diffie-Hellman Key Exchange.
         """
-        pass
+        self._generate_x()
+        self.e = pow(self.G, self.x, self.P)
+        m = Message()
+        m.add_byte(c_MSG_KEXGSS_INIT)
+        m.add_string(self.kexgss.ssh_init_sec_context(target=self.gss_host))
+        m.add_mpint(self.e)
+        self.transport._send_message(m)
 
     def parse_next(self, ptype, m):
         """
@@ -57,7 +63,16 @@ class KexGSSGroup1:
         :param ptype: The (string) type of the incoming packet
         :param `.Message` m: The packet content
         """
-        pass
+        if ptype == MSG_KEXGSS_HOSTKEY:
+            self._parse_kexgss_hostkey(m)
+        elif ptype == MSG_KEXGSS_CONTINUE:
+            self._parse_kexgss_continue(m)
+        elif ptype == MSG_KEXGSS_COMPLETE:
+            self._parse_kexgss_complete(m)
+        elif ptype == MSG_KEXGSS_ERROR:
+            self._parse_kexgss_error(m)
+        else:
+            raise SSHException('GSS KexGroup1 asked to handle packet type %d' % ptype)
 
     def _generate_x(self):
         """
@@ -67,7 +82,8 @@ class KexGSSGroup1:
         potential x where the first 63 bits are 1, because some of those will
         be larger than q (but this is a tiny tiny subset of potential x).
         """
-        pass
+        top = b'\x7f' + os.urandom(127)
+        self.x = util.inflate_long(top, True)
 
     def _parse_kexgss_hostkey(self, m):
         """
@@ -75,7 +91,8 @@ class KexGSSGroup1:
 
         :param `.Message` m: The content of the SSH2_MSG_KEXGSS_HOSTKEY message
         """
-        pass
+        host_key = m.get_string()
+        self.transport._set_remote_host_key(host_key)
 
     def _parse_kexgss_continue(self, m):
         """
@@ -84,7 +101,12 @@ class KexGSSGroup1:
         :param `.Message` m: The content of the SSH2_MSG_KEXGSS_CONTINUE
             message
         """
-        pass
+        token = m.get_string()
+        srv_token = self.kexgss.ssh_init_sec_context(target=self.gss_host, recv_token=token)
+        m = Message()
+        m.add_byte(c_MSG_KEXGSS_CONTINUE)
+        m.add_string(srv_token)
+        self.transport._send_message(m)
 
     def _parse_kexgss_complete(self, m):
         """
@@ -93,7 +115,12 @@ class KexGSSGroup1:
         :param `.Message` m: The content of the
             SSH2_MSG_KEXGSS_COMPLETE message
         """
-        pass
+        self.f = m.get_mpint()
+        mic_token = m.get_string()
+        self.kexgss.ssh_check_mic(mic_token, self.transport.session_id)
+        K = pow(self.f, self.x, self.P)
+        self.transport._set_K_H(K, self.transport.kex_engine.compute_key(K, self.transport.H))
+        self.transport._activate_outbound()
 
     def _parse_kexgss_init(self, m):
         """
@@ -101,7 +128,19 @@ class KexGSSGroup1:
 
         :param `.Message` m: The content of the SSH2_MSG_KEXGSS_INIT message
         """
-        pass
+        client_token = m.get_string()
+        self.e = m.get_mpint()
+        self.x = util.generate_random_int(2, self.P - 1)
+        self.f = pow(self.G, self.x, self.P)
+        K = pow(self.e, self.x, self.P)
+        self.transport._set_K_H(K, self.transport.kex_engine.compute_key(K, self.transport.H))
+        srv_token = self.kexgss.ssh_accept_sec_context(client_token)
+        m = Message()
+        m.add_byte(c_MSG_KEXGSS_COMPLETE)
+        m.add_mpint(self.f)
+        m.add_string(srv_token)
+        self.transport._send_message(m)
+        self.transport._activate_outbound()
 
     def _parse_kexgss_error(self, m):
         """
@@ -114,7 +153,11 @@ class KexGSSGroup1:
                              the error message and the language tag of the
                              message
         """
-        pass
+        maj_status = m.get_int()
+        min_status = m.get_int()
+        err_msg = m.get_string()
+        m.get_string()  # Language tag (discarded)
+        raise SSHException(f"GSS-API Error: Major Status: {maj_status}, Minor Status: {min_status}, Error: {err_msg}")
 
 class KexGSSGroup14(KexGSSGroup1):
     """
@@ -152,7 +195,16 @@ class KexGSSGex:
         """
         Start the GSS-API / SSPI Authenticated Diffie-Hellman Group Exchange
         """
-        pass
+        if self.transport.server_mode:
+            self.transport._expect_packet(MSG_KEXGSS_GROUPREQ)
+        else:
+            m = Message()
+            m.add_byte(c_MSG_KEXGSS_GROUPREQ)
+            m.add_int(self.min_bits)
+            m.add_int(self.preferred_bits)
+            m.add_int(self.max_bits)
+            self.transport._send_message(m)
+            self.transport._expect_packet(MSG_KEXGSS_GROUP)
 
     def parse_next(self, ptype, m):
         """
@@ -161,7 +213,22 @@ class KexGSSGex:
         :param ptype: The (string) type of the incoming packet
         :param `.Message` m: The packet content
         """
-        pass
+        if ptype == MSG_KEXGSS_GROUPREQ:
+            self._parse_kexgss_groupreq(m)
+        elif ptype == MSG_KEXGSS_GROUP:
+            self._parse_kexgss_group(m)
+        elif ptype == MSG_KEXGSS_INIT:
+            self._parse_kexgss_gex_init(m)
+        elif ptype == MSG_KEXGSS_HOSTKEY:
+            self._parse_kexgss_hostkey(m)
+        elif ptype == MSG_KEXGSS_CONTINUE:
+            self._parse_kexgss_continue(m)
+        elif ptype == MSG_KEXGSS_COMPLETE:
+            self._parse_kexgss_complete(m)
+        elif ptype == MSG_KEXGSS_ERROR:
+            self._parse_kexgss_error(m)
+        else:
+            raise SSHException('GSS KexGex asked to handle packet type %d' % ptype)
 
     def _parse_kexgss_groupreq(self, m):
         """
@@ -170,7 +237,21 @@ class KexGSSGex:
         :param `.Message` m: The content of the
             SSH2_MSG_KEXGSS_GROUPREQ message
         """
-        pass
+        min_bits = m.get_int()
+        preferred_bits = m.get_int()
+        max_bits = m.get_int()
+        
+        # Here, you would typically choose appropriate DH parameters
+        # based on the requested bit sizes. For this example, we'll
+        # use fixed parameters.
+        self.p = self.P
+        self.g = self.G
+        
+        m = Message()
+        m.add_byte(c_MSG_KEXGSS_GROUP)
+        m.add_mpint(self.p)
+        m.add_mpint(self.g)
+        self.transport._send_message(m)
 
     def _parse_kexgss_group(self, m):
         """
@@ -178,7 +259,20 @@ class KexGSSGex:
 
         :param `Message` m: The content of the SSH2_MSG_KEXGSS_GROUP message
         """
-        pass
+        self.p = m.get_mpint()
+        self.g = m.get_mpint()
+        
+        # Generate client's private key
+        self.x = util.generate_random_int(2, self.p - 1)
+        
+        # Calculate client's public key
+        self.e = pow(self.g, self.x, self.p)
+        
+        m = Message()
+        m.add_byte(c_MSG_KEXGSS_INIT)
+        m.add_string(self.kexgss.ssh_init_sec_context(target=self.gss_host))
+        m.add_mpint(self.e)
+        self.transport._send_message(m)
 
     def _parse_kexgss_gex_init(self, m):
         """
@@ -186,7 +280,28 @@ class KexGSSGex:
 
         :param `Message` m: The content of the SSH2_MSG_KEXGSS_INIT message
         """
-        pass
+        client_token = m.get_string()
+        self.e = m.get_mpint()
+        
+        # Generate server's private key
+        self.x = util.generate_random_int(2, self.p - 1)
+        
+        # Calculate server's public key
+        self.f = pow(self.g, self.x, self.p)
+        
+        # Calculate shared secret
+        K = pow(self.e, self.x, self.p)
+        
+        self.transport._set_K_H(K, self.transport.kex_engine.compute_key(K, self.transport.H))
+        
+        srv_token = self.kexgss.ssh_accept_sec_context(client_token)
+        
+        m = Message()
+        m.add_byte(c_MSG_KEXGSS_COMPLETE)
+        m.add_mpint(self.f)
+        m.add_string(srv_token)
+        self.transport._send_message(m)
+        self.transport._activate_outbound()
 
     def _parse_kexgss_hostkey(self, m):
         """
@@ -194,7 +309,8 @@ class KexGSSGex:
 
         :param `Message` m: The content of the SSH2_MSG_KEXGSS_HOSTKEY message
         """
-        pass
+        host_key = m.get_string()
+        self.transport._set_remote_host_key(host_key)
 
     def _parse_kexgss_continue(self, m):
         """
