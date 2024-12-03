@@ -113,7 +113,9 @@ class BufferedFile(ClosingContextManager):
         :returns:
             The number of bytes read.
         """
-        pass
+        data = self.read(len(buff))
+        buff[:len(data)] = data
+        return len(data)
 
     def read(self, size=None):
         """
@@ -132,7 +134,27 @@ class BufferedFile(ClosingContextManager):
             data read from the file (as bytes), or an empty string if EOF was
             encountered immediately
         """
-        pass
+        if not self.readable():
+            raise IOError("File not open for reading")
+        if size is None or size < 0:
+            # Read until EOF
+            result = self._rbuffer
+            self._rbuffer = bytes()
+            while True:
+                data = self._read(self._bufsize)
+                if not data:
+                    break
+                result += data
+            return result
+        else:
+            result = self._rbuffer[:size]
+            self._rbuffer = self._rbuffer[size:]
+            while len(result) < size:
+                data = self._read(size - len(result))
+                if not data:
+                    break
+                result += data
+            return result
 
     def readline(self, size=None):
         """
@@ -156,7 +178,32 @@ class BufferedFile(ClosingContextManager):
             Else: the encoding of the file is assumed to be UTF-8 and character
             strings (`str`) are returned
         """
-        pass
+        if not self.readable():
+            raise IOError("File not open for reading")
+        
+        line = bytes()
+        while size is None or len(line) < size:
+            if self._rbuffer:
+                newline_pos = self._rbuffer.find(linefeed_byte)
+                if newline_pos != -1:
+                    line += self._rbuffer[:newline_pos + 1]
+                    self._rbuffer = self._rbuffer[newline_pos + 1:]
+                    break
+                else:
+                    line += self._rbuffer
+                    self._rbuffer = bytes()
+            
+            data = self._read(self._bufsize)
+            if not data:
+                break
+            self._rbuffer += data
+        
+        if size is not None:
+            line = line[:size]
+        
+        if not self._flags & self.FLAG_BINARY:
+            return u(line)
+        return line
 
     def readlines(self, sizehint=None):
         """
@@ -168,7 +215,15 @@ class BufferedFile(ClosingContextManager):
         :param int sizehint: desired maximum number of bytes to read.
         :returns: list of lines read from the file.
         """
-        pass
+        lines = []
+        total_bytes = 0
+        while sizehint is None or total_bytes < sizehint:
+            line = self.readline()
+            if not line:
+                break
+            lines.append(line)
+            total_bytes += len(line)
+        return lines
 
     def seek(self, offset, whence=0):
         """
@@ -188,7 +243,19 @@ class BufferedFile(ClosingContextManager):
 
         :raises: ``IOError`` -- if the file doesn't support random access.
         """
-        pass
+        if not self.seekable():
+            raise IOError("File does not support random access")
+        
+        if whence == self.SEEK_SET:
+            self._pos = offset
+        elif whence == self.SEEK_CUR:
+            self._pos += offset
+        elif whence == self.SEEK_END:
+            self._pos = self._get_size() + offset
+        else:
+            raise ValueError("Invalid whence value")
+        
+        self._rbuffer = bytes()
 
     def tell(self):
         """
@@ -198,7 +265,7 @@ class BufferedFile(ClosingContextManager):
 
         :returns: file position (`number <int>` of bytes).
         """
-        pass
+        return self._pos
 
     def write(self, data):
         """
@@ -209,7 +276,20 @@ class BufferedFile(ClosingContextManager):
 
         :param data: ``str``/``bytes`` data to write
         """
-        pass
+        if not self.writable():
+            raise IOError("File not open for writing")
+        
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        
+        if self._flags & self.FLAG_BUFFERED:
+            self._wbuffer.write(data)
+            if self._wbuffer.tell() >= self._bufsize:
+                self.flush()
+        else:
+            self._write(data)
+        
+        self._pos += len(data)
 
     def writelines(self, sequence):
         """
@@ -220,14 +300,15 @@ class BufferedFile(ClosingContextManager):
 
         :param sequence: an iterable sequence of strings.
         """
-        pass
+        for line in sequence:
+            self.write(line)
 
     def xreadlines(self):
         """
         Identical to ``iter(f)``.  This is a deprecated file interface that
         predates Python iterator support.
         """
-        pass
+        return self.__iter__()
 
     def _read(self, size):
         """
@@ -235,14 +316,14 @@ class BufferedFile(ClosingContextManager):
         Read data from the stream.  Return ``None`` or raise ``EOFError`` to
         indicate EOF.
         """
-        pass
+        raise NotImplementedError("_read() must be implemented by subclass")
 
     def _write(self, data):
         """
         (subclass override)
         Write data into the stream.
         """
-        pass
+        raise NotImplementedError("_write() must be implemented by subclass")
 
     def _get_size(self):
         """
@@ -253,10 +334,33 @@ class BufferedFile(ClosingContextManager):
         a stream that can't be randomly accessed, you don't need to override
         this method,
         """
-        pass
+        return 0
 
     def _set_mode(self, mode='r', bufsize=-1):
         """
         Subclasses call this method to initialize the BufferedFile.
         """
-        pass
+        self._flags = 0
+        if 'r' in mode:
+            self._flags |= self.FLAG_READ
+        if 'w' in mode:
+            self._flags |= self.FLAG_WRITE
+        if 'a' in mode:
+            self._flags |= self.FLAG_WRITE | self.FLAG_APPEND
+        if '+' in mode:
+            self._flags |= self.FLAG_READ | self.FLAG_WRITE
+        if 'b' in mode:
+            self._flags |= self.FLAG_BINARY
+        if bufsize == 0:
+            self._flags |= self.FLAG_BUFFERED
+        elif bufsize == 1:
+            self._flags |= self.FLAG_BUFFERED | self.FLAG_LINE_BUFFERED
+        elif bufsize > 1:
+            self._flags |= self.FLAG_BUFFERED
+            self._bufsize = bufsize
+        else:
+            self._bufsize = self._DEFAULT_BUFSIZE
+        
+        if self._flags & self.FLAG_APPEND:
+            self._size = self._get_size()
+            self._pos = self._size
