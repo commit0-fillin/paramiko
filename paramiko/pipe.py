@@ -49,4 +49,8 @@ def make_or_pipe(pipe):
     affect the real pipe. if either returned pipe is set, the wrapped pipe
     is set. when both are cleared, the wrapped pipe is cleared.
     """
-    pass
+    a = OrPipe(pipe)
+    b = OrPipe(pipe)
+    a._partner = b
+    b._partner = a
+    return a, b
