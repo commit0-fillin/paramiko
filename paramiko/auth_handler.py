@@ -21,7 +21,7 @@ class AuthHandler:
         self.transport = weakref.proxy(transport)
         self.username = None
         self.authenticated = False
-        self.auth_event = None
+        self.auth_event = threading.Event()
         self.auth_method = ''
         self.banner = None
         self.password = None
@@ -37,7 +37,19 @@ class AuthHandler:
         """
         response_list = handler(title, instructions, prompt_list)
         """
-        pass
+        self.username = username
+        self.interactive_handler = handler
+        self.auth_event = event
+        self.submethods = submethods
+
+        m = Message()
+        m.add_byte(cMSG_USERAUTH_REQUEST)
+        m.add_string(username)
+        m.add_string('ssh-connection')
+        m.add_string('keyboard-interactive')
+        m.add_string('')
+        m.add_string(submethods)
+        self.transport._send_message(m)
 
     def _get_key_type_and_bits(self, key):
         """
@@ -45,7 +57,16 @@ class AuthHandler:
 
         Intended for input to or verification of, key signatures.
         """
-        pass
+        if isinstance(key, RSAKey):
+            return 'ssh-rsa', key.public_blob.key_blob
+        elif isinstance(key, DSSKey):
+            return 'ssh-dss', key.public_blob.key_blob
+        elif isinstance(key, ECDSAKey):
+            return key.public_blob.key_type, key.public_blob.key_blob
+        elif isinstance(key, Ed25519Key):
+            return 'ssh-ed25519', key.public_blob.key_blob
+        else:
+            raise SSHException('Unknown key type')
 
 class GssapiWithMicAuthHandler:
     """A specialized Auth handler for gssapi-with-mic
@@ -79,10 +100,20 @@ class AuthOnlyHandler(AuthHandler):
         which accepts a Message ``m`` and may call mutator methods on it to add
         more fields.
         """
-        pass
+        m = Message()
+        m.add_byte(cMSG_USERAUTH_REQUEST)
+        m.add_string(username)
+        m.add_string('ssh-connection')
+        m.add_string(method)
+        if finish_message:
+            finish_message(m)
+        self.auth_event.clear()
+        self.transport._send_message(m)
+        self.auth_event.wait()
+        return self.authenticated
 
     def auth_interactive(self, username, handler, submethods=''):
         """
         response_list = handler(title, instructions, prompt_list)
         """
-        pass
+        return self.send_auth_request(username, 'keyboard-interactive', lambda m: m.add_string('').add_string(submethods))
