@@ -285,7 +285,9 @@ class Transport(threading.Thread, ClosingContextManager):
 
         .. versionadded:: 1.5.3
         """
-        pass
+        self.close()
+        self.sock = None
+        self.packetizer = None
 
     def get_security_options(self):
         """
@@ -294,7 +296,7 @@ class Transport(threading.Thread, ClosingContextManager):
         digest/hash operations, public keys, and key exchanges) and the order
         of preference for them.
         """
-        pass
+        return SecurityOptions(self)
 
     def set_gss_host(self, gss_host, trust_dns=True, gssapi_requested=True):
         """
@@ -317,7 +319,21 @@ class Transport(threading.Thread, ClosingContextManager):
             (Defaults to True due to backwards compatibility.)
         :returns: ``None``.
         """
-        pass
+        if not gssapi_requested:
+            return
+
+        if gss_host is None:
+            gss_host = self.hostname
+
+        if trust_dns:
+            from socket import gaierror
+            try:
+                gss_host = socket.getfqdn(gss_host)
+            except gaierror:
+                # Can't resolve it, use it as-is
+                pass
+
+        self.gss_host = gss_host
 
     def start_client(self, event=None, timeout=None):
         """
@@ -354,7 +370,34 @@ class Transport(threading.Thread, ClosingContextManager):
             `.SSHException` -- if negotiation fails (and no ``event`` was
             passed in)
         """
-        pass
+        self.active = True
+        if event is not None:
+            self.completion_event = event
+        self.packetizer.set_log(lambda x: self._log(DEBUG, 'Packetizer: ' + x))
+        self.kex_engine.set_log(lambda x: self._log(DEBUG, 'Kex: ' + x))
+        
+        if timeout is not None:
+            self.packetizer.start_handshake(timeout)
+        
+        self._send_kex_init()
+        self.kex_engine.parse_next(MSG_KEXINIT)
+        
+        if self.completion_event is not None:
+            self.completion_event.wait()
+            if not self.active:
+                raise SSHException('Negotiation failed.')
+        else:
+            while True:
+                if not self.active:
+                    raise SSHException('Negotiation failed.')
+                if self.initial_kex_done:
+                    break
+                if timeout is not None and self.packetizer.handshake_timed_out():
+                    raise SSHException('Timeout waiting for handshake')
+                self.kex_engine.parse_next()
+                time.sleep(0.1)
+        
+        self.packetizer.complete_handshake()
 
     def start_server(self, event=None, server=None):
         """
