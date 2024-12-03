@@ -100,7 +100,8 @@ class Message:
         """
         Fetch a boolean from the stream.
         """
-        pass
+        b = self.get_byte()
+        return b != zero_byte
 
     def get_adaptive_int(self):
         """
@@ -108,13 +109,16 @@ class Message:
 
         :return: a 32-bit unsigned `int`.
         """
-        pass
+        byte = self.get_byte()
+        if byte == max_byte:
+            return self.get_int()
+        return byte_ord(byte)
 
     def get_int(self):
         """
         Fetch an int from the stream.
         """
-        pass
+        return struct.unpack('>I', self.get_bytes(4))[0]
 
     def get_int64(self):
         """
@@ -122,7 +126,7 @@ class Message:
 
         :return: a 64-bit unsigned integer (`int`).
         """
-        pass
+        return struct.unpack('>Q', self.get_bytes(8))[0]
 
     def get_mpint(self):
         """
@@ -130,7 +134,7 @@ class Message:
 
         :return: an arbitrary-length integer (`int`).
         """
-        pass
+        return util.inflate_long(self.get_string())
 
     def get_string(self):
         """
@@ -138,7 +142,7 @@ class Message:
         object, and may contain unprintable characters.  (It's not unheard of
         for a string to contain another byte-stream message.)
         """
-        pass
+        return self.get_bytes(self.get_int())
 
     def get_text(self):
         """
@@ -147,13 +151,13 @@ class Message:
         This currently operates by attempting to encode the next "string" as
         ``utf-8``.
         """
-        pass
+        return u(self.get_string())
 
     def get_binary(self):
         """
         Alias for `get_string` (obtains a bytestring).
         """
-        pass
+        return self.get_string()
 
     def get_list(self):
         """
@@ -161,7 +165,7 @@ class Message:
 
         These are trivially encoded as comma-separated values in a string.
         """
-        pass
+        return self.get_string().split(b',')
 
     def add_bytes(self, b):
         """
@@ -169,7 +173,7 @@ class Message:
 
         :param bytes b: bytes to add
         """
-        pass
+        self.packet.write(b)
 
     def add_byte(self, b):
         """
@@ -177,7 +181,7 @@ class Message:
 
         :param bytes b: byte to add
         """
-        pass
+        self.packet.write(struct.pack('>B', b))
 
     def add_boolean(self, b):
         """
@@ -185,7 +189,7 @@ class Message:
 
         :param bool b: boolean value to add
         """
-        pass
+        self.add_byte(bool(b))
 
     def add_int(self, n):
         """
@@ -193,7 +197,7 @@ class Message:
 
         :param int n: integer to add
         """
-        pass
+        self.packet.write(struct.pack('>I', n))
 
     def add_adaptive_int(self, n):
         """
@@ -201,7 +205,11 @@ class Message:
 
         :param int n: integer to add
         """
-        pass
+        if n < 0x100:
+            self.add_byte(n)
+        else:
+            self.add_byte(0xFF)
+            self.add_int(n)
 
     def add_int64(self, n):
         """
@@ -209,7 +217,7 @@ class Message:
 
         :param int n: long int to add
         """
-        pass
+        self.packet.write(struct.pack('>Q', n))
 
     def add_mpint(self, z):
         """
@@ -218,7 +226,7 @@ class Message:
 
         :param int z: long int to add
         """
-        pass
+        self.add_string(util.deflate_long(z))
 
     def add_string(self, s):
         """
@@ -226,7 +234,9 @@ class Message:
 
         :param byte s: bytestring to add
         """
-        pass
+        s = asbytes(s)
+        self.add_int(len(s))
+        self.packet.write(s)
 
     def add_list(self, l):
         """
@@ -236,7 +246,7 @@ class Message:
 
         :param l: list of strings to add
         """
-        pass
+        self.add_string(b','.join([asbytes(s) for s in l]))
 
     def add(self, *seq):
         """
@@ -248,4 +258,16 @@ class Message:
 
         :param seq: the sequence of items
         """
-        pass
+        for item in seq:
+            if isinstance(item, bytes):
+                self.add_string(item)
+            elif isinstance(item, str):
+                self.add_string(item)
+            elif isinstance(item, int):
+                self.add_int(item)
+            elif isinstance(item, bool):
+                self.add_boolean(item)
+            elif isinstance(item, list):
+                self.add_list(item)
+            else:
+                raise TypeError('Unknown type')
