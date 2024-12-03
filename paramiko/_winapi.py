@@ -14,7 +14,22 @@ def format_system_message(errno):
     Call FormatMessage with a system error number to retrieve
     the descriptive error message.
     """
-    pass
+    # Get a buffer for the error message
+    buffer = ctypes.create_unicode_buffer(0)
+    size = ctypes.windll.kernel32.FormatMessageW(
+        0x00001000,  # FORMAT_MESSAGE_FROM_SYSTEM
+        None,
+        errno,
+        0,  # Default language
+        ctypes.byref(buffer),
+        0,  # Size of buffer (0 to allocate)
+        None
+    )
+    
+    if size:
+        return buffer.value
+    else:
+        return f"Unknown error ({errno})"
 
 class WindowsError(builtins.WindowsError):
     """more info about errors at
@@ -84,7 +99,22 @@ class MemoryMap:
         """
         Read n bytes from mapped view.
         """
-        pass
+        if self.pos >= self.length:
+            return b''
+        
+        remaining = self.length - self.pos
+        to_read = min(n, remaining)
+        
+        # Create a buffer to read into
+        buffer = ctypes.create_string_buffer(to_read)
+        
+        # Copy memory from the mapped view to our buffer
+        ctypes.memmove(buffer, self.view + self.pos, to_read)
+        
+        # Update position
+        self.pos += to_read
+        
+        return buffer.raw
 
     def __exit__(self, exc_type, exc_val, tb):
         ctypes.windll.kernel32.UnmapViewOfFile(self.view)
@@ -159,17 +189,73 @@ def GetTokenInformation(token, information_class):
     """
     Given a token, get the token information for it.
     """
-    pass
+    # First, determine the necessary buffer size
+    buffer_size = ctypes.wintypes.DWORD()
+    ctypes.windll.advapi32.GetTokenInformation(
+        token,
+        information_class,
+        None,
+        0,
+        ctypes.byref(buffer_size)
+    )
+    
+    # Allocate the buffer
+    buffer = ctypes.create_string_buffer(buffer_size.value)
+    
+    # Now, get the actual token information
+    success = ctypes.windll.advapi32.GetTokenInformation(
+        token,
+        information_class,
+        buffer,
+        buffer_size,
+        ctypes.byref(buffer_size)
+    )
+    
+    if not success:
+        raise WindowsError()
+    
+    return buffer.raw
 
 def get_current_user():
     """
     Return a TOKEN_USER for the owner of this process.
     """
-    pass
+    # Get the current process token
+    token = ctypes.wintypes.HANDLE()
+    success = ctypes.windll.advapi32.OpenProcessToken(
+        ctypes.windll.kernel32.GetCurrentProcess(),
+        TokenAccess.TOKEN_QUERY,
+        ctypes.byref(token)
+    )
+    if not success:
+        raise WindowsError()
+
+    try:
+        # Get the TOKEN_USER structure
+        token_user_buffer = GetTokenInformation(token, TokenInformationClass.TokenUser)
+        return ctypes.cast(token_user_buffer, ctypes.POINTER(TOKEN_USER)).contents
+    finally:
+        ctypes.windll.kernel32.CloseHandle(token)
 
 def get_security_attributes_for_user(user=None):
     """
     Return a SECURITY_ATTRIBUTES structure with the SID set to the
     specified user (uses current user if none is specified).
     """
-    pass
+    if user is None:
+        user = get_current_user()
+
+    # Create and initialize a security descriptor
+    sd = SECURITY_DESCRIPTOR()
+    ctypes.windll.advapi32.InitializeSecurityDescriptor(ctypes.byref(sd), SECURITY_DESCRIPTOR.REVISION)
+
+    # Set the owner in the security descriptor
+    ctypes.windll.advapi32.SetSecurityDescriptorOwner(ctypes.byref(sd), user.SID, False)
+
+    # Create and initialize a security attributes structure
+    sa = SECURITY_ATTRIBUTES()
+    sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
+    sa.bInheritHandle = True
+    sa.lpSecurityDescriptor = ctypes.addressof(sd)
+
+    return sa
