@@ -20,7 +20,19 @@ def can_talk_to_agent():
     This checks both if we have the required libraries (win32all or ctypes)
     and if there is a Pageant currently running.
     """
-    pass
+    try:
+        import ctypes
+
+        # Try to find the Pageant window
+        hwnd = ctypes.windll.user32.FindWindowA(b"Pageant", b"Pageant")
+        if hwnd == 0:
+            return False
+        
+        # We found a Pageant window, so we can talk to the agent
+        return True
+    except ImportError:
+        # If we can't import ctypes, we can't talk to Pageant
+        return False
 if platform.architecture()[0] == '64bit':
     ULONG_PTR = ctypes.c_uint64
 else:
@@ -38,7 +50,52 @@ def _query_pageant(msg):
     Communication with the Pageant process is done through a shared
     memory-mapped file.
     """
-    pass
+    import ctypes
+    from . import _winapi
+
+    hwnd = ctypes.windll.user32.FindWindowA(b"Pageant", b"Pageant")
+    if hwnd == 0:
+        raise Exception("Pageant not found")
+
+    # Allocate some memory
+    size = len(msg)
+    mem = _winapi.GlobalAlloc(_winapi.GMEM_MOVEABLE, size)
+    if mem == 0:
+        raise _winapi.WindowsError()
+
+    try:
+        # Lock the memory and copy the message into it
+        ptr = _winapi.GlobalLock(mem)
+        if ptr == 0:
+            raise _winapi.WindowsError()
+        try:
+            ctypes.memmove(ptr, msg, size)
+        finally:
+            _winapi.GlobalUnlock(mem)
+
+        # Prepare the COPYDATASTRUCT
+        cds = _winapi.COPYDATASTRUCT()
+        cds.num_data = _AGENT_COPYDATA_ID
+        cds.data_size = size
+        cds.data_loc = mem
+
+        # Send the message
+        response = ctypes.c_long()
+        r = ctypes.windll.user32.SendMessageA(
+            hwnd, win32con_WM_COPYDATA, 0, ctypes.byref(cds)
+        )
+        if r == 0:
+            raise Exception("Pageant failed to respond")
+
+        # Retrieve the response
+        rsize = _winapi.GlobalSize(mem)
+        response = (ctypes.c_byte * rsize)()
+        ctypes.memmove(response, ptr, rsize)
+
+        return bytes(response)
+
+    finally:
+        _winapi.GlobalFree(mem)
 
 class PageantConnection:
     """
