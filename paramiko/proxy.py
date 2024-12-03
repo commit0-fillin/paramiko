@@ -45,7 +45,12 @@ class ProxyCommand(ClosingContextManager):
 
         :param str content: string to be sent to the forked command
         """
-        pass
+        try:
+            self.process.stdin.write(content)
+            self.process.stdin.flush()
+            return len(content)
+        except IOError:
+            return 0
 
     def recv(self, size):
         """
@@ -55,4 +60,11 @@ class ProxyCommand(ClosingContextManager):
 
         :return: the string of bytes read, which may be shorter than requested
         """
-        pass
+        if self.timeout is not None:
+            rlist, wlist, xlist = select([self.process.stdout], [], [], self.timeout)
+            if len(rlist) == 0:
+                raise socket.timeout()
+        try:
+            return self.process.stdout.read(size)
+        except IOError:
+            return b''
