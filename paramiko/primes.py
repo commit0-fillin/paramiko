@@ -8,7 +8,7 @@ from paramiko.ssh_exception import SSHException
 
 def _roll_random(n):
     """returns a random # from 0 to N-1"""
-    pass
+    return int.from_bytes(os.urandom(4), byteorder='big') % n
 
 class ModulusPack:
     """
@@ -24,4 +24,15 @@ class ModulusPack:
         """
         :raises IOError: passed from any file operations that fail.
         """
-        pass
+        with open(filename, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    try:
+                        time, mod, gen, key = line.split()
+                        mod = int(mod)
+                        gen = int(gen)
+                        key = int(key)
+                        self.pack.setdefault(mod, []).append((gen, key))
+                    except ValueError:
+                        self.discarded.append(line)
